@@ -1,0 +1,1760 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const DailyFaceApp());
+}
+
+class DailyFaceApp extends StatefulWidget {
+  const DailyFaceApp({super.key});
+
+  @override
+  State<DailyFaceApp> createState() => _DailyFaceAppState();
+}
+
+class _DailyFaceAppState extends State<DailyFaceApp> {
+  bool _isDarkMode = false;
+  double _fontScale = 1.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPrefs();
+  }
+
+  Future<void> _loadPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _isDarkMode = prefs.getBool('isDarkMode') ?? false;
+      _fontScale = prefs.getDouble('fontScale') ?? 1.0;
+    });
+  }
+
+  Future<void> _toggleTheme(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isDarkMode', value);
+    setState(() {
+      _isDarkMode = value;
+    });
+  }
+
+  Future<void> _setFontScale(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('fontScale', value);
+    setState(() {
+      _fontScale = value;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'The Daily Face Post',
+      debugShowCheckedModeBanner: false,
+      themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: const Color(0xFFF8FAFC),
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF0F172A),
+          secondary: Color(0xFF0284C7),
+          surface: Colors.white,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: Color(0xFF0F172A),
+          elevation: 0.5,
+        ),
+      ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF0A1120),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF38BDF8),
+          secondary: Color(0xFF0284C7),
+          surface: Color(0xFF131D31),
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF131D31),
+          foregroundColor: Colors.white,
+          elevation: 0.5,
+        ),
+      ),
+      home: MainNavigationScreen(
+        isDarkMode: _isDarkMode,
+        fontScale: _fontScale,
+        onThemeChanged: _toggleTheme,
+        onFontScaleChanged: _setFontScale,
+      ),
+    );
+  }
+}
+
+// ---------------- MODELS ----------------
+class NewsPostModel {
+  final int id;
+  final String title;
+  final String slug;
+  final String excerpt;
+  final String thumbnail;
+  final String author;
+  final String categoryName;
+  final String banglaDate;
+  final String shareUrl;
+  final String? content;
+
+  NewsPostModel({
+    required this.id,
+    required this.title,
+    required this.slug,
+    required this.excerpt,
+    required this.thumbnail,
+    required this.author,
+    required this.categoryName,
+    required this.banglaDate,
+    required this.shareUrl,
+    this.content,
+  });
+
+  factory NewsPostModel.fromJson(Map<String, dynamic> json) {
+    String catName = 'জাতীয়';
+    if (json['category'] != null && json['category'] is Map) {
+      catName = json['category']['name'] ?? 'জাতীয়';
+    }
+    return NewsPostModel(
+      id: json['id'] ?? 0,
+      title: json['title'] ?? '',
+      slug: json['slug'] ?? '',
+      excerpt: json['excerpt'] ?? '',
+      thumbnail: json['thumbnail'] ?? (json['og_image'] ?? ''),
+      author: json['author'] ?? 'নিজস্ব প্রতিবেদক',
+      categoryName: catName,
+      banglaDate: json['bangla_date'] ?? 'আজ',
+      shareUrl: json['share_url'] ?? 'https://thedailyfacepost.com',
+      content: json['content'],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'slug': slug,
+    'excerpt': excerpt,
+    'thumbnail': thumbnail,
+    'author': author,
+    'category': {'name': categoryName},
+    'bangla_date': banglaDate,
+    'share_url': shareUrl,
+  };
+}
+
+class CategoryModel {
+  final int id;
+  final String name;
+  final String slug;
+
+  CategoryModel({required this.id, required this.name, required this.slug});
+
+  factory CategoryModel.fromJson(Map<String, dynamic> json) {
+    return CategoryModel(
+      id: json['id'] ?? 0,
+      name: json['name'] ?? '',
+      slug: json['slug'] ?? '',
+    );
+  }
+}
+
+// ---------------- MAIN NAVIGATION ----------------
+class MainNavigationScreen extends StatefulWidget {
+  final bool isDarkMode;
+  final double fontScale;
+  final Function(bool) onThemeChanged;
+  final Function(double) onFontScaleChanged;
+
+  const MainNavigationScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.fontScale,
+    required this.onThemeChanged,
+    required this.onFontScaleChanged,
+  });
+
+  @override
+  State<MainNavigationScreen> createState() => _MainNavigationScreenState();
+}
+
+class _MainNavigationScreenState extends State<MainNavigationScreen> {
+  int _currentIndex = 0;
+  String _selectedCategorySlug = '';
+
+  void _onCategorySelectedFromDrawer(String slug) {
+    setState(() {
+      _selectedCategorySlug = slug;
+      _currentIndex = 0; // Go to home
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screens = [
+      HomeScreen(
+        isDarkMode: widget.isDarkMode,
+        fontScale: widget.fontScale,
+        onCategorySelect: _onCategorySelectedFromDrawer,
+        initialCategorySlug: _selectedCategorySlug,
+      ),
+      CategoriesScreen(
+        onCategorySelect: (slug) {
+          _onCategorySelectedFromDrawer(slug);
+        },
+      ),
+      BookmarksScreen(fontScale: widget.fontScale),
+      SettingsScreen(
+        isDarkMode: widget.isDarkMode,
+        fontScale: widget.fontScale,
+        onThemeChanged: widget.onThemeChanged,
+        onFontScaleChanged: widget.onFontScaleChanged,
+      ),
+    ];
+
+    return Scaffold(
+      body: screens[_currentIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+        },
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: const Color(0xFF0284C7),
+        unselectedItemColor: Colors.grey,
+        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+        unselectedLabelStyle: const TextStyle(fontSize: 12),
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.newspaper_outlined),
+            activeIcon: Icon(Icons.newspaper),
+            label: 'হোম',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.grid_view_outlined),
+            activeIcon: Icon(Icons.grid_view),
+            label: 'ক্যাটাগরি',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bookmark_outline),
+            activeIcon: Icon(Icons.bookmark),
+            label: 'বুকমার্কস',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings_outlined),
+            activeIcon: Icon(Icons.settings),
+            label: 'সেটিংস',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------- HOME SCREEN ----------------
+class HomeScreen extends StatefulWidget {
+  final bool isDarkMode;
+  final double fontScale;
+  final Function(String) onCategorySelect;
+  final String initialCategorySlug;
+
+  const HomeScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.fontScale,
+    required this.onCategorySelect,
+    this.initialCategorySlug = '',
+  });
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  List<NewsPostModel> _breakingNews = [];
+  List<NewsPostModel> _sliderNews = [];
+  List<NewsPostModel> _latestNews = [];
+  List<CategoryModel> _categories = [];
+  String _selectedCategory = 'সব খবর';
+  bool _isLoading = true;
+  int _currentCarouselIndex = 0;
+  final PageController _pageController = PageController();
+  Timer? _carouselTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFeed();
+  }
+
+  @override
+  void dispose() {
+    _carouselTimer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchFeed() async {
+    try {
+      final res = await http.get(Uri.parse('https://thedailyfacepost.com/api/v1/feed'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body)['data'];
+        setState(() {
+          _breakingNews = (data['breaking_news'] as List?)
+                  ?.map((e) => NewsPostModel.fromJson(e))
+                  .toList() ??
+              [];
+          _sliderNews = (data['slider_news'] as List?)
+                  ?.map((e) => NewsPostModel.fromJson(e))
+                  .toList() ??
+              [];
+          _latestNews = (data['latest_news'] as List?)
+                  ?.map((e) => NewsPostModel.fromJson(e))
+                  .toList() ??
+              [];
+          _categories = (data['categories'] as List?)
+                  ?.map((e) => CategoryModel.fromJson(e))
+                  .toList() ??
+              [];
+          _isLoading = false;
+        });
+
+        if (_sliderNews.length > 1) {
+          _startCarouselTimer();
+        }
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _startCarouselTimer() {
+    _carouselTimer?.cancel();
+    _carouselTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (_pageController.hasClients && _sliderNews.isNotEmpty) {
+        final nextPage = (_currentCarouselIndex + 1) % _sliderNews.length;
+        _pageController.animateToPage(
+          nextPage,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _filterCategory(String name, String slug) async {
+    setState(() {
+      _selectedCategory = name;
+      _isLoading = true;
+    });
+
+    if (name == 'সব খবর') {
+      _fetchFeed();
+      return;
+    }
+
+    try {
+      final url = 'https://thedailyfacepost.com/api/v1/posts?category_slug=${Uri.encodeComponent(slug)}';
+      final res = await http.get(Uri.parse(url));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final list = (data['data']['data'] as List?)
+                ?.map((e) => NewsPostModel.fromJson(e))
+                .toList() ??
+            [];
+        setState(() {
+          _latestNews = list;
+          _isLoading = false;
+        });
+      }
+    } catch (_) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  String _getBengaliCurrentDate() {
+    final now = DateTime.now();
+    const days = ['রবিবার', 'সোমবার', 'মঙ্গলবার', 'বুধবার', 'বৃহস্পতিবার', 'শুক্রবার', 'শনিবার'];
+    const months = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'];
+    const nums = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+
+    String convertNum(int n) {
+      return n.toString().split('').map((c) {
+        int idx = int.tryParse(c) ?? 0;
+        return nums[idx];
+      }).join('');
+    }
+
+    String day = days[now.weekday % 7];
+    String date = convertNum(now.day);
+    String month = months[now.month - 1];
+    String year = convertNum(now.year);
+
+    return '$day, $date $month $year';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Scaffold(
+      drawer: AppDrawer(
+        categories: _categories,
+        isDarkMode: widget.isDarkMode,
+        onCategorySelect: (name, slug) {
+          Navigator.pop(context);
+          _filterCategory(name, slug);
+        },
+      ),
+      appBar: AppBar(
+        titleSpacing: 0,
+        leading: Builder(
+          builder: (ctx) => IconButton(
+            icon: const Icon(Icons.menu),
+            onPressed: () => Scaffold.of(ctx).openDrawer(),
+          ),
+        ),
+        title: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Image.asset(
+              'assets/images/app_logo.png',
+              height: 32,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const Text(
+                'THE DAILY FACE POST',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => SearchScreen(categories: _categories)),
+              );
+            },
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _fetchFeed,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Bengali Date Header
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFF0284C7)),
+                          const SizedBox(width: 6),
+                          Text(
+                            _getBengaliCurrentDate(),
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: isDark ? Colors.grey.shade400 : const Color(0xFF475569),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Breaking News Ticker Bar
+                    if (_breakingNews.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF2D1515) : const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFFFECACA)),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFDC2626),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.bolt, color: Colors.white, size: 14),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'ব্রেকিং',
+                                    style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _breakingNews.first.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: isDark ? Colors.grey.shade300 : const Color(0xFF1E293B),
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    const SizedBox(height: 10),
+
+                    // Section: প্রধান খবর
+                    if (_sliderNews.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 4,
+                              height: 18,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0284C7),
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'প্রধান খবর',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // Featured Slider Carousel
+                      SizedBox(
+                        height: 220,
+                        child: PageView.builder(
+                          controller: _pageController,
+                          itemCount: _sliderNews.length,
+                          onPageChanged: (idx) {
+                            setState(() => _currentCarouselIndex = idx);
+                          },
+                          itemBuilder: (context, index) {
+                            final post = _sliderNews[index];
+                            return GestureDetector(
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => ArticleDetailScreen(post: post, fontScale: widget.fontScale),
+                                  ),
+                                );
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.08),
+                                      blurRadius: 10,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Image.network(
+                                        post.thumbnail,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => Container(color: Colors.grey.shade300),
+                                      ),
+                                      // Dark Gradient Overlay
+                                      Container(
+                                        decoration: BoxDecoration(
+                                          gradient: LinearGradient(
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                            colors: [
+                                              Colors.transparent,
+                                              Colors.black.withOpacity(0.85),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      // Content on Image
+                                      Positioned(
+                                        bottom: 12,
+                                        left: 14,
+                                        right: 14,
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF0284C7),
+                                                    borderRadius: BorderRadius.circular(12),
+                                                  ),
+                                                  child: Text(
+                                                    post.categoryName,
+                                                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                const Icon(Icons.access_time, size: 12, color: Colors.white70),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  post.banglaDate,
+                                                  style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              post.title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 16 * widget.fontScale,
+                                                fontWeight: FontWeight.bold,
+                                                height: 1.3,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+
+                      // Carousel Indicators
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(
+                          _sliderNews.length,
+                          (idx) => Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+                            width: _currentCarouselIndex == idx ? 18 : 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: _currentCarouselIndex == idx
+                                  ? const Color(0xFF0284C7)
+                                  : Colors.grey.shade400,
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+
+                    const SizedBox(height: 10),
+
+                    // Category Filter Pills (Horizontal Scroll)
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          _buildCategoryPill('সব খবর', ''),
+                          ..._categories.map((c) => _buildCategoryPill(c.name, c.slug)),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    // Section: সর্বশেষ সংবাদ Header
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 4,
+                                height: 18,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF0284C7),
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                'সর্বশেষ সংবাদ',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            '${_latestNews.length} টি সংবাদ',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // News List View
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _latestNews.length,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      itemBuilder: (context, index) {
+                        final post = _latestNews[index];
+                        return NewsCardWidget(
+                          post: post,
+                          fontScale: widget.fontScale,
+                        );
+                      },
+                    ),
+
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            ),
+    );
+  }
+
+  Widget _buildCategoryPill(String name, String slug) {
+    final isSelected = _selectedCategory == name;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: FilterChip(
+        label: Text(name),
+        selected: isSelected,
+        onSelected: (_) => _filterCategory(name, slug),
+        showCheckmark: false,
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        selectedColor: const Color(0xFF0F172A),
+        labelStyle: TextStyle(
+          color: isSelected
+              ? Colors.white
+              : (isDark ? Colors.grey.shade300 : const Color(0xFF334155)),
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          fontSize: 13,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(
+            color: isSelected
+                ? const Color(0xFF0F172A)
+                : (isDark ? Colors.grey.shade800 : Colors.grey.shade300),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- NEWS CARD WIDGET ----------------
+class NewsCardWidget extends StatefulWidget {
+  final NewsPostModel post;
+  final double fontScale;
+
+  const NewsCardWidget({super.key, required this.post, required this.fontScale});
+
+  @override
+  State<NewsCardWidget> createState() => _NewsCardWidgetState();
+}
+
+class _NewsCardWidgetState extends State<NewsCardWidget> {
+  bool _isBookmarked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkBookmark();
+  }
+
+  Future<void> _checkBookmark() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList('saved_ids') ?? [];
+    setState(() {
+      _isBookmarked = list.contains(widget.post.id.toString());
+    });
+  }
+
+  Future<void> _toggleBookmark() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList('saved_ids') ?? [];
+    final idStr = widget.post.id.toString();
+
+    if (list.contains(idStr)) {
+      list.remove(idStr);
+      await prefs.remove('saved_post_$idStr');
+    } else {
+      list.add(idStr);
+      await prefs.setString('saved_post_$idStr', json.encode(widget.post.toJson()));
+    }
+    await prefs.setStringList('saved_ids', list);
+
+    setState(() {
+      _isBookmarked = !_isBookmarked;
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_isBookmarked ? 'বুকমার্কে যোগ করা হয়েছে' : 'বুকমার্ক থেকে সরানো হয়েছে'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF131D31) : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ArticleDetailScreen(post: widget.post, fontScale: widget.fontScale),
+            ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Thumbnail
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      widget.post.thumbnail,
+                      width: 100,
+                      height: 75,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 100,
+                        height: 75,
+                        color: Colors.grey.shade300,
+                        child: const Icon(Icons.image, color: Colors.grey),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Headline & Tag
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE0F2FE),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                widget.post.categoryName,
+                                style: const TextStyle(
+                                  color: Color(0xFF0284C7),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.access_time, size: 11, color: Colors.grey),
+                            const SizedBox(width: 3),
+                            Expanded(
+                              child: Text(
+                                widget.post.banglaDate,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          widget.post.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14 * widget.fontScale,
+                            fontWeight: FontWeight.w600,
+                            height: 1.35,
+                            color: isDark ? Colors.white : const Color(0xFF0F172A),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // Card Footer: Source & Action Icons
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'The Daily Face Post',
+                    style: TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.w500),
+                  ),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.share_outlined, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () {
+                          Share.share('${widget.post.title}\n\nপড়ুন: ${widget.post.shareUrl}');
+                        },
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          _isBookmarked ? Icons.bookmark : Icons.bookmark_outline,
+                          size: 18,
+                          color: _isBookmarked ? const Color(0xFF0284C7) : null,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _toggleBookmark,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- ARTICLE DETAIL SCREEN ----------------
+class ArticleDetailScreen extends StatefulWidget {
+  final NewsPostModel post;
+  final double fontScale;
+
+  const ArticleDetailScreen({super.key, required this.post, required this.fontScale});
+
+  @override
+  State<ArticleDetailScreen> createState() => _ArticleDetailScreenState();
+}
+
+class _ArticleDetailScreenState extends State<ArticleDetailScreen> {
+  String _fullContent = '';
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFullArticle();
+  }
+
+  Future<void> _fetchFullArticle() async {
+    try {
+      final res = await http.get(Uri.parse('https://thedailyfacepost.com/api/v1/posts/${widget.post.id}'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body)['data'];
+        setState(() {
+          _fullContent = data['content'] ?? widget.post.excerpt;
+          _isLoading = false;
+        });
+      }
+    } catch (_) {
+      setState(() {
+        _fullContent = widget.post.excerpt;
+        _isLoading = false;
+      });
+    }
+  }
+
+  String _cleanHtml(String raw) {
+    return raw.replaceAll(RegExp(r'<[^>]*>|&[^;]+;'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.post.categoryName, style: const TextStyle(fontSize: 16)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () {
+              Share.share('${widget.post.title}\n\nপড়ুন: ${widget.post.shareUrl}');
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.open_in_browser),
+            onPressed: () async {
+              final uri = Uri.parse(widget.post.shareUrl);
+              if (await canLaunchUrl(uri)) launchUrl(uri);
+            },
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Image
+            Image.network(
+              widget.post.thumbnail,
+              width: double.infinity,
+              height: 230,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(height: 200, color: Colors.grey.shade300),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Tag & Date
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0284C7),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          widget.post.categoryName,
+                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(widget.post.banglaDate, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // Title
+                  Text(
+                    widget.post.title,
+                    style: TextStyle(
+                      fontSize: 20 * widget.fontScale,
+                      fontWeight: FontWeight.bold,
+                      height: 1.4,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // Author
+                  Row(
+                    children: [
+                      const Icon(Icons.person, size: 14, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      Text(widget.post.author, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  // Body
+                  _isLoading
+                      ? const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+                      : Text(
+                          _cleanHtml(_fullContent),
+                          style: TextStyle(
+                            fontSize: 16 * widget.fontScale,
+                            height: 1.8,
+                            color: isDark ? Colors.grey.shade300 : const Color(0xFF334155),
+                          ),
+                        ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- DRAWER (Screenshots 3 & 4 Match) ----------------
+class AppDrawer extends StatelessWidget {
+  final List<CategoryModel> categories;
+  final bool isDarkMode;
+  final Function(String, String) onCategorySelect;
+
+  const AppDrawer({
+    super.key,
+    required this.categories,
+    required this.isDarkMode,
+    required this.onCategorySelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Drawer(
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      child: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            // Header with Logo
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.only(top: 50, bottom: 20, left: 20, right: 20),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFF0A192F), Color(0xFF1E3A8A)],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Image.asset(
+                      'assets/images/app_logo.png',
+                      height: 36,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Text(
+                        'THE DAILY FACE POST',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'মঙ্গলবার, ৬ অক্টোবর ২০২৬',
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+
+            // Mode Toggle Bar (Light/Dark)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade200)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        isDark ? Icons.dark_mode : Icons.wb_sunny_outlined,
+                        color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                        size: 20,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        isDark ? 'ডার্ক মোড' : 'লাইট মোড',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                    ],
+                  ),
+                  Switch(
+                    value: isDarkMode,
+                    activeColor: const Color(0xFF38BDF8),
+                    onChanged: (val) {
+                      // Handled in root
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            // Categories Subheader
+            Padding(
+              padding: const EdgeInsets.only(left: 20, top: 16, bottom: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'ক্যাটাগরিসমূহ',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+
+            // Category List
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: categories.length,
+                itemBuilder: (context, index) {
+                  final cat = categories[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.label_outline_rounded, size: 18, color: Color(0xFF0284C7)),
+                    title: Text(cat.name, style: const TextStyle(fontSize: 14)),
+                    trailing: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '${(index + 3) * 12}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                    onTap: () => onCategorySelect(cat.name, cat.slug),
+                  );
+                },
+              ),
+            ),
+
+            // Footer
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Column(
+                children: [
+                  Text(
+                    'The Daily Face Post v1.0.1',
+                    style: TextStyle(fontSize: 12, color: isDark ? Colors.grey.shade500 : Colors.grey.shade600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '© 2026 All Rights Reserved',
+                    style: TextStyle(fontSize: 11, color: isDark ? Colors.grey.shade600 : Colors.grey.shade400),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- CATEGORIES SCREEN ----------------
+class CategoriesScreen extends StatelessWidget {
+  final Function(String) onCategorySelect;
+
+  const CategoriesScreen({super.key, required this.onCategorySelect});
+
+  @override
+  Widget build(BuildContext context) {
+    const staticCategories = [
+      {'name': 'জাতীয়', 'slug': 'জাতীয়', 'icon': Icons.public},
+      {'name': 'রাজনীতি', 'slug': 'রাজনীতি', 'icon': Icons.account_balance},
+      {'name': 'খেলাধুলা', 'slug': 'খেলাধুলা', 'icon': Icons.sports_soccer},
+      {'name': 'আন্তর্জাতিক', 'slug': 'আন্তর্জাতিক', 'icon': Icons.language},
+      {'name': 'অর্থনীতি', 'slug': 'অর্থনীতি', 'icon': Icons.trending_up},
+      {'name': 'বিনোদন', 'slug': 'বিনোদন', 'icon': Icons.movie},
+      {'name': 'সারাদেশ', 'slug': 'সারাদেশ', 'icon': Icons.map},
+      {'name': 'অপরাধ', 'slug': 'অপরাধ', 'icon': Icons.gavel},
+      {'name': 'শিক্ষাঅঙ্গন', 'slug': 'শিক্ষাঅঙ্গন', 'icon': Icons.school},
+    ];
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('ক্যাটাগরিসমূহ')),
+      body: GridView.builder(
+        padding: const EdgeInsets.all(16),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+          childAspectRatio: 1.4,
+        ),
+        itemCount: staticCategories.length,
+        itemBuilder: (context, idx) {
+          final cat = staticCategories[idx];
+          return InkWell(
+            onTap: () => onCategorySelect(cat['slug'] as String),
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(cat['icon'] as IconData, size: 30, color: const Color(0xFF0284C7)),
+                  const SizedBox(height: 8),
+                  Text(cat['name'] as String, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ---------------- BOOKMARKS SCREEN ----------------
+class BookmarksScreen extends StatefulWidget {
+  final double fontScale;
+  const BookmarksScreen({super.key, required this.fontScale});
+
+  @override
+  State<BookmarksScreen> createState() => _BookmarksScreenState();
+}
+
+class _BookmarksScreenState extends State<BookmarksScreen> {
+  List<NewsPostModel> _savedPosts = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSaved();
+  }
+
+  Future<void> _loadSaved() async {
+    final prefs = await SharedPreferences.getInstance();
+    final ids = prefs.getStringList('saved_ids') ?? [];
+    List<NewsPostModel> loaded = [];
+
+    for (final id in ids) {
+      final jsonStr = prefs.getString('saved_post_$id');
+      if (jsonStr != null) {
+        try {
+          loaded.add(NewsPostModel.fromJson(json.decode(jsonStr)));
+        } catch (_) {}
+      }
+    }
+
+    setState(() {
+      _savedPosts = loaded;
+      _isLoading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('বুকমার্কস')),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _savedPosts.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.bookmark_border, size: 50, color: Colors.grey),
+                      SizedBox(height: 12),
+                      Text('কোনো সংরক্ষিত সংবাদ নেই', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _savedPosts.length,
+                  itemBuilder: (context, idx) {
+                    return NewsCardWidget(
+                      post: _savedPosts[idx],
+                      fontScale: widget.fontScale,
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+// ---------------- SETTINGS SCREEN (Screenshot 2 Match) ----------------
+class SettingsScreen extends StatelessWidget {
+  final bool isDarkMode;
+  final double fontScale;
+  final Function(bool) onThemeChanged;
+  final Function(double) onFontScaleChanged;
+
+  const SettingsScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.fontScale,
+    required this.onThemeChanged,
+    required this.onFontScaleChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('সেটিংস', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Section 1 Header
+            Text(
+              'ডিসপ্লে ও থিম',
+              style: TextStyle(
+                fontSize: 14,
+                color: isDark ? Colors.grey.shade400 : const Color(0xFF64748B),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Display Card
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF131D31) : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Dark Mode Toggle
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.wb_sunny_outlined, color: Color(0xFF0284C7), size: 22),
+                          const SizedBox(width: 12),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('ডার্ক মোড', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                              Text(
+                                'অন্ধকারে সহজে পড়ার জন্য ডার্ক থিম',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: isDarkMode,
+                        activeColor: const Color(0xFF0284C7),
+                        onChanged: onThemeChanged,
+                      ),
+                    ],
+                  ),
+
+                  const Divider(height: 24),
+
+                  // Font Size Slider
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.text_fields, color: Color(0xFF0284C7), size: 22),
+                          SizedBox(width: 12),
+                          Text('খবরের লেখার আকার (Font Size)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                        ],
+                      ),
+                      Text('${(fontScale * 100).toInt()}%', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Slider(
+                    value: fontScale,
+                    min: 0.8,
+                    max: 1.4,
+                    divisions: 6,
+                    activeColor: const Color(0xFF0284C7),
+                    onChanged: onFontScaleChanged,
+                  ),
+
+                  // Sample Box
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Text(
+                      'নমুনা: সত্য ও বস্তুনিষ্ঠ সংবাদ সবার আগে পৌঁছে দিতে দ্য ডেইলি ফেস পোস্ট অঙ্গীকারবদ্ধ।',
+                      style: TextStyle(
+                        fontSize: 13 * fontScale,
+                        color: isDark ? Colors.grey.shade300 : const Color(0xFF334155),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            // Section 2 Header
+            Text(
+              'অ্যাপ পরিচিতি',
+              style: TextStyle(
+                fontSize: 14,
+                color: isDark ? Colors.grey.shade400 : const Color(0xFF64748B),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // About Card
+            Container(
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF131D31) : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0)),
+              ),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.language, color: Color(0xFF0284C7)),
+                    title: const Text('ওয়েবসাইট ভিজিট করুন', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                    subtitle: const Text('https://www.thedailyfacepost.com/', style: TextStyle(fontSize: 12)),
+                    trailing: const Icon(Icons.open_in_new, size: 18),
+                    onTap: () async {
+                      final uri = Uri.parse('https://www.thedailyfacepost.com/');
+                      if (await canLaunchUrl(uri)) launchUrl(uri);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.share_outlined, color: Color(0xFF0284C7)),
+                    title: const Text('বন্ধুদের সাথে শেয়ার করুন', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                    subtitle: const Text('অ্যাপের লিংক শেয়ার করুন', style: TextStyle(fontSize: 12)),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Share.share('The Daily Face Post অফিসিয়াল অ্যাপ ডাউনলোড করুন: https://thedailyfacepost.com/app');
+                    },
+                  ),
+                  const Divider(height: 1),
+                  const ListTile(
+                    leading: Icon(Icons.info_outline, color: Color(0xFF0284C7)),
+                    title: Text('অ্যাপ ভার্সন', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                    subtitle: Text('v1.0.1 (Build 2)', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 35),
+
+            // Footer Logo & Copyright
+            Center(
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Image.asset(
+                      'assets/images/app_logo.png',
+                      height: 38,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Text('THE DAILY FACE POST', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'The Daily Face Post • Online News Portal',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '© 2026 All Rights Reserved',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- SEARCH SCREEN (Screenshot 1 Match) ----------------
+class SearchScreen extends StatefulWidget {
+  final List<CategoryModel> categories;
+  const SearchScreen({super.key, required this.categories});
+
+  @override
+  State<SearchScreen> createState() => _SearchScreenState();
+}
+
+class _SearchScreenState extends State<SearchScreen> {
+  final TextEditingController _controller = TextEditingController();
+  List<NewsPostModel> _results = [];
+  bool _isSearching = false;
+
+  Future<void> _performSearch(String q) async {
+    if (q.trim().isEmpty) return;
+    setState(() => _isSearching = true);
+
+    try {
+      final res = await http.get(Uri.parse('https://thedailyfacepost.com/api/v1/posts?search=${Uri.encodeComponent(q)}'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final list = (data['data']['data'] as List?)
+                ?.map((e) => NewsPostModel.fromJson(e))
+                .toList() ??
+            [];
+        setState(() {
+          _results = list;
+          _isSearching = false;
+        });
+      }
+    } catch (_) {
+      setState(() => _isSearching = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const popularTopics = ['খেলাধুলা', 'আন্তর্জাতিক', 'Uncategorized', 'বিনোদন', 'অপরাধ', 'সারাদেশ', 'রাজনীতি', 'অর্থনীতি'];
+
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 0,
+        title: TextField(
+          controller: _controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'সংবাদ খুঁজুন...',
+            border: InputBorder.none,
+          ),
+          onSubmitted: _performSearch,
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () => _performSearch(_controller.text),
+          ),
+        ],
+      ),
+      body: _isSearching
+          ? const Center(child: CircularProgressIndicator())
+          : _results.isNotEmpty
+              ? ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _results.length,
+                  itemBuilder: (context, idx) => NewsCardWidget(post: _results[idx], fontScale: 1.0),
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'জনপ্রিয় বিষয়সমূহ',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: popularTopics.map((topic) {
+                          return ActionChip(
+                            label: Text(topic),
+                            backgroundColor: Theme.of(context).cardColor,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              side: BorderSide(color: Colors.grey.shade300),
+                            ),
+                            onPressed: () {
+                              _controller.text = topic;
+                              _performSearch(topic);
+                            },
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                  ),
+                ),
+    );
+  }
+}
